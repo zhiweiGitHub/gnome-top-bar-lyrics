@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<schemalist>
+  <schema id="org.gnome.shell.extensions.spotify-lyrics" path="/org/gnome/shell/extensions/spotify-lyrics/">
+    <key name="position-in-panel" type="s">
+      <default>'right'</default>
+      <summary>Position in Panel</summary>
+      <description>Where to place the indicator in the panel (left, center, right)</description>
+      <choices>
+        <choice value='left'/>
+        <choice value='center'/>
+        <choice value='right'/>
+      </choices>
+    </key>
+    <key name="max-text-length" type="i">
+      <default>80</default>
+      <range min="10" max="200"/>
+      <summary>Max Text Length</summary>
+      <description>Maximum capacity of text to display</description>
+    </key>
+    <key name="font-size" type="i">
+      <default>16</default>
+      <range min="10" max="30"/>
+      <summary>Font Size</summary>
+      <description>Font size of the lyrics text in the panel (in pixels)</description>
+    </key>
+    <key name="spotify-client-id" type="s">
+      <default>'6db8058b714049c6a9da2462c6e5deea'</default>
+      <summary>Spotify Client ID</summary>
+      <description>Spotify Developer App Client ID for automatic token generation</description>
+    </key>
+    <key name="spotify-client-secret" type="s">
+      <default>'2e90f2993a874fd884bc92affeb3e4b3'</default>
+      <summary>Spotify Client Secret</summary>
+      <description>Spotify Developer App Client Secret for automatic token generation</description>
+    </key>
+  </schema>
+</schemalist>
