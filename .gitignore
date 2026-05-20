@@ -1,0 +1,28 @@
+# Local agent/tooling state
+.agents/
+.codex/
+
+# Editor and IDE metadata
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Build and packaged artifacts
+bundle/
+*.zip
+*.tar.gz
+
+# Compiled GSettings schemas
+schemas/gschemas.compiled
+
+# Logs and temporary files
+*.log
+*.tmp
+tmp/
+temp/
+
+# OS metadata
+.DS_Store
+Thumbs.db
