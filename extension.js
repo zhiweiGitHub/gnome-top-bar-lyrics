@@ -158,7 +158,7 @@ function getPlayerDisplayName(settings, playerKey) {
 const MusicLyricsIndicator = GObject.registerClass(
     class MusicLyricsIndicator extends PanelMenu.Button {
         _init(settings) {
-            super._init(0.5, 'Music Lyrics Indicator');
+            super._init(0.5, 'gnome-top-bar-lyrics Indicator');
 
             this._settings = settings;
 
@@ -174,7 +174,7 @@ const MusicLyricsIndicator = GObject.registerClass(
             this._label = new St.Label({
                 text: '',
                 y_align: Clutter.ActorAlign.CENTER,
-                style_class: 'spotify-lyrics-label'
+                style_class: 'gnome-top-bar-lyrics-label'
             });
 
             // Enable text clipping with ellipsis
@@ -297,7 +297,7 @@ const MusicLyricsIndicator = GObject.registerClass(
             this._settingsItem.connect('activate', () => {
                 try {
                     const proc = Gio.Subprocess.new(
-                        ['gnome-extensions', 'prefs', 'spotify-lyrics@gnome-shell-extension'],
+                        ['gnome-extensions', 'prefs', 'gnome-top-bar-lyrics'],
                         Gio.SubprocessFlags.NONE
                     );
                 } catch (e) {
@@ -315,7 +315,7 @@ const MusicLyricsIndicator = GObject.registerClass(
             this._githubItem = new PopupMenu.PopupMenuItem(t(this._settings, 'viewOnGitHub'));
             this._githubItem.connect('activate', () => {
                 Gio.AppInfo.launch_default_for_uri(
-                    'https://github.com/d3osaju/Spotline',
+                    'https://github.com/d3osaju/gnome-top-bar-lyrics',
                     null
                 );
             });
@@ -1009,7 +1009,7 @@ const MusicLyricsIndicator = GObject.registerClass(
                                 return;
                             }
                         }
-                        log('Spotline: Failed to obtain Spotify access token');
+                        log('gnome-top-bar-lyrics: Failed to obtain Spotify access token');
                         callback(null);
                     } catch (e) {
                         logError(e, 'Failed to parse Spotify token response');
@@ -1505,7 +1505,7 @@ export default class MusicLyricsExtension extends Extension {
             this._menuManagerAdded = true;
         } else {
             // addToStatusArea handles menuManager registration automatically
-            Main.panel.addToStatusArea('music-lyrics-indicator', this._indicator);
+            Main.panel.addToStatusArea('gnome-top-bar-lyrics-indicator', this._indicator);
             this._menuManagerAdded = false;
         }
     }

@@ -1,6 +1,6 @@
-# Music Lyrics GNOME Extension
+# gnome-top-bar-lyrics
 
-Music Lyrics is a GNOME Shell extension that shows the current lyric line in the top panel for desktop music players. It is built around MPRIS, so it can follow player state from supported desktop apps, switch between players, and fall back to track information when lyrics are unavailable.
+gnome-top-bar-lyrics is a GNOME Shell extension that shows the current lyric line in the top panel for desktop music players. It is built around MPRIS, so it can follow player state from supported desktop apps, switch between players, and fall back to track information when lyrics are unavailable.
 
 The extension currently focuses on Spotify, YesPlayMusic, and LX Music. LX Music is supported through both its MPRIS interface and its local Open API on `127.0.0.1:23330`, which can provide the current lyric line directly.
 
@@ -42,7 +42,7 @@ Spotify API credentials are not bundled. If you want the Spotify search refineme
 Open preferences with:
 
 ```bash
-gnome-extensions prefs spotify-lyrics@gnome-shell-extension
+gnome-extensions prefs gnome-top-bar-lyrics
 ```
 
 Available settings:
@@ -67,17 +67,17 @@ Available settings:
 User installation:
 
 ```bash
-mkdir -p ~/.local/share/gnome-shell/extensions/spotify-lyrics@gnome-shell-extension
-cp -r * ~/.local/share/gnome-shell/extensions/spotify-lyrics@gnome-shell-extension/
-gnome-extensions enable spotify-lyrics@gnome-shell-extension
+mkdir -p ~/.local/share/gnome-shell/extensions/gnome-top-bar-lyrics
+cp -r * ~/.local/share/gnome-shell/extensions/gnome-top-bar-lyrics/
+gnome-extensions enable gnome-top-bar-lyrics
 ```
 
 System-wide installation:
 
 ```bash
-sudo mkdir -p /usr/share/gnome-shell/extensions/spotify-lyrics@gnome-shell-extension
-sudo cp -r * /usr/share/gnome-shell/extensions/spotify-lyrics@gnome-shell-extension/
-gnome-extensions enable spotify-lyrics@gnome-shell-extension
+sudo mkdir -p /usr/share/gnome-shell/extensions/gnome-top-bar-lyrics
+sudo cp -r * /usr/share/gnome-shell/extensions/gnome-top-bar-lyrics/
+gnome-extensions enable gnome-top-bar-lyrics
 ```
 
 After installation, restart GNOME Shell on X11 with `Alt+F2`, then `r`, then Enter. On Wayland, log out and log back in.
@@ -95,8 +95,8 @@ node --check prefs.js
 glib-compile-schemas schemas
 
 # Reload extension
-gnome-extensions disable spotify-lyrics@gnome-shell-extension
-gnome-extensions enable spotify-lyrics@gnome-shell-extension
+gnome-extensions disable gnome-top-bar-lyrics
+gnome-extensions enable gnome-top-bar-lyrics
 
 # Watch GNOME Shell logs
 journalctl -f -o cat /usr/bin/gnome-shell
@@ -126,9 +126,9 @@ If LX Music lyrics do not appear, make sure LX Music's Open API is enabled. If t
 
 ---
 
-# Music Lyrics GNOME 扩展
+# gnome-top-bar-lyrics 中文说明
 
-Music Lyrics 是一个 GNOME Shell 扩展，用来在顶部面板显示当前播放歌曲的歌词行。扩展基于 MPRIS 监听播放器状态，可以在多个播放器之间切换；没有歌词时会回退显示歌曲和歌手信息。
+gnome-top-bar-lyrics 是一个 GNOME Shell 扩展，用来在顶部面板显示当前播放歌曲的歌词行。扩展基于 MPRIS 监听播放器状态，可以在多个播放器之间切换；没有歌词时会回退显示歌曲和歌手信息。
 
 当前主要支持 Spotify、YesPlayMusic 和洛雪音乐。洛雪音乐同时支持 MPRIS 和本地开放 API `127.0.0.1:23330`，开启开放 API 后可以直接从洛雪获取当前歌词行。
 
@@ -170,7 +170,7 @@ Music Lyrics 是一个 GNOME Shell 扩展，用来在顶部面板显示当前播
 打开设置：
 
 ```bash
-gnome-extensions prefs spotify-lyrics@gnome-shell-extension
+gnome-extensions prefs gnome-top-bar-lyrics
 ```
 
 可配置项：
@@ -195,17 +195,17 @@ gnome-extensions prefs spotify-lyrics@gnome-shell-extension
 用户安装：
 
 ```bash
-mkdir -p ~/.local/share/gnome-shell/extensions/spotify-lyrics@gnome-shell-extension
-cp -r * ~/.local/share/gnome-shell/extensions/spotify-lyrics@gnome-shell-extension/
-gnome-extensions enable spotify-lyrics@gnome-shell-extension
+mkdir -p ~/.local/share/gnome-shell/extensions/gnome-top-bar-lyrics
+cp -r * ~/.local/share/gnome-shell/extensions/gnome-top-bar-lyrics/
+gnome-extensions enable gnome-top-bar-lyrics
 ```
 
 系统级安装：
 
 ```bash
-sudo mkdir -p /usr/share/gnome-shell/extensions/spotify-lyrics@gnome-shell-extension
-sudo cp -r * /usr/share/gnome-shell/extensions/spotify-lyrics@gnome-shell-extension/
-gnome-extensions enable spotify-lyrics@gnome-shell-extension
+sudo mkdir -p /usr/share/gnome-shell/extensions/gnome-top-bar-lyrics
+sudo cp -r * /usr/share/gnome-shell/extensions/gnome-top-bar-lyrics/
+gnome-extensions enable gnome-top-bar-lyrics
 ```
 
 安装后需要重载 GNOME Shell。X11 下可按 `Alt+F2`，输入 `r` 后回车；Wayland 下需要注销后重新登录。
@@ -223,8 +223,8 @@ node --check prefs.js
 glib-compile-schemas schemas
 
 # 重载扩展
-gnome-extensions disable spotify-lyrics@gnome-shell-extension
-gnome-extensions enable spotify-lyrics@gnome-shell-extension
+gnome-extensions disable gnome-top-bar-lyrics
+gnome-extensions enable gnome-top-bar-lyrics
 
 # 查看 GNOME Shell 日志
 journalctl -f -o cat /usr/bin/gnome-shell
