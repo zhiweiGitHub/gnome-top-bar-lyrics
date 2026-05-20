@@ -1,7 +1,8 @@
 {
   "name": "gnome-top-bar-lyrics",
   "description": "Displays synchronized lyrics for the currently playing song in the top bar.\n\nFeatures:\n* Real-time synced lyrics from LRCLIB API\n* Supports Spotify, LX Music, and YesPlayMusic\n* Automatically updates as the song plays\n* Falls back to song name if lyrics unavailable\n* Works with supported MPRIS-compatible players",
-  "uuid": "gnome-top-bar-lyrics",
+  "uuid": "gnome-top-bar-lyrics@github.com",
+  "version": 1,
   "shell-version": [
     "45",
     "46"

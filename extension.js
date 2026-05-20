@@ -297,7 +297,7 @@ const MusicLyricsIndicator = GObject.registerClass(
             this._settingsItem.connect('activate', () => {
                 try {
                     const proc = Gio.Subprocess.new(
-                        ['gnome-extensions', 'prefs', 'gnome-top-bar-lyrics'],
+                        ['gnome-extensions', 'prefs', 'gnome-top-bar-lyrics@github.com'],
                         Gio.SubprocessFlags.NONE
                     );
                 } catch (e) {
