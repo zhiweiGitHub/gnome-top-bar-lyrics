@@ -23,13 +23,35 @@
       <summary>Font Size</summary>
       <description>Font size of the lyrics text in the panel (in pixels)</description>
     </key>
+    <key name="language" type="s">
+      <default>'en'</default>
+      <summary>Language</summary>
+      <description>Display language for preferences and panel menu text</description>
+      <choices>
+        <choice value='en'/>
+        <choice value='zh'/>
+      </choices>
+    </key>
+    <key name="player-priority-order" type="s">
+      <default>'spotify,yesplaymusic,lx-music-desktop'</default>
+      <summary>Player Priority Order</summary>
+      <description>Preferred player order for lyrics display and opening/focusing players</description>
+      <choices>
+        <choice value='spotify,yesplaymusic,lx-music-desktop'/>
+        <choice value='spotify,lx-music-desktop,yesplaymusic'/>
+        <choice value='yesplaymusic,spotify,lx-music-desktop'/>
+        <choice value='yesplaymusic,lx-music-desktop,spotify'/>
+        <choice value='lx-music-desktop,spotify,yesplaymusic'/>
+        <choice value='lx-music-desktop,yesplaymusic,spotify'/>
+      </choices>
+    </key>
     <key name="spotify-client-id" type="s">
-      <default>'6db8058b714049c6a9da2462c6e5deea'</default>
+      <default>''</default>
       <summary>Spotify Client ID</summary>
       <description>Spotify Developer App Client ID for automatic token generation</description>
     </key>
     <key name="spotify-client-secret" type="s">
-      <default>'2e90f2993a874fd884bc92affeb3e4b3'</default>
+      <default>''</default>
       <summary>Spotify Client Secret</summary>
       <description>Spotify Developer App Client Secret for automatic token generation</description>
     </key>

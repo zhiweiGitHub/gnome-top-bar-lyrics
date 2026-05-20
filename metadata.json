@@ -1,6 +1,6 @@
 {
   "name": "Music Lyrics",
-  "description": "Displays synchronized lyrics for the currently playing song in the top bar.\n\nFeatures:\n* Real-time synced lyrics from LRCLIB API\n* Supports Spotify and YouTube Music\n* Automatically updates as the song plays\n* Falls back to song name if lyrics unavailable\n* Works with any MPRIS-compatible player",
+  "description": "Displays synchronized lyrics for the currently playing song in the top bar.\n\nFeatures:\n* Real-time synced lyrics from LRCLIB API\n* Supports Spotify, LX Music, and YesPlayMusic\n* Automatically updates as the song plays\n* Falls back to song name if lyrics unavailable\n* Works with supported MPRIS-compatible players",
   "uuid": "spotify-lyrics@gnome-shell-extension",
   "shell-version": [
     "45",

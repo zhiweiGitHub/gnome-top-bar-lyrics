@@ -18,29 +18,141 @@ const NETEASE_SEARCH_URL = 'https://music.163.com/api/search/get';
 const NETEASE_LYRIC_URL = 'https://music.163.com/api/song/lyric';
 const SPOTIFY_SEARCH_URL = 'https://api.spotify.com/v1/search';
 const YESPLAYMUSIC_LYRIC_URL = 'http://127.0.0.1:10754/lyric';
+const LX_MUSIC_STATUS_URL = 'http://127.0.0.1:23330/status';
 
 // Player launch mapping
 const PLAYER_LAUNCH_MAP = {
     'spotify': 'spotify.desktop',
     'yesplaymusic': 'yesplaymusic.desktop',
+    'lx-music-desktop': 'lx-music-desktop.desktop',
+};
+
+const DEFAULT_PLAYER_PRIORITY_ORDER = ['spotify', 'yesplaymusic', 'lx-music-desktop'];
+const PLAYER_ACTION_ORDER = ['spotify', 'yesplaymusic', 'lx-music-desktop'];
+
+const PLAYER_CONFIGS = {
+    'spotify': {
+        name: 'Spotify',
+        busName: 'org.mpris.MediaPlayer2.spotify',
+    },
+    'lx-music-desktop': {
+        name: 'LX Music',
+        busNamePrefix: 'org.mpris.MediaPlayer2.chromium.instance',
+        identity: 'lx-music-desktop',
+    },
+    'yesplaymusic': {
+        name: 'YesPlayMusic',
+        busName: 'org.mpris.MediaPlayer2.yesplaymusic',
+    },
+};
+
+const TRANSLATIONS = {
+    en: {
+        noPlayerConnected: 'No player connected',
+        openPlayer: playerName => `Open ${playerName}`,
+        refreshPlayer: 'Refresh Player',
+        settings: 'Settings',
+        about: 'About',
+        viewOnGitHub: 'View on GitHub',
+        credits: 'Created by deosaju',
+        playingFrom: playerName => `Playing from ${playerName}`,
+        unknownPlayer: 'Unknown Player',
+        unknownTrack: 'Unknown track',
+        unknownTrackTitle: 'Unknown Track',
+        unknownArtist: 'Unknown Artist',
+        unknownAlbum: 'Unknown Album',
+    },
+    zh: {
+        noPlayerConnected: '未连接播放器',
+        openPlayer: playerName => `打开${playerName}`,
+        refreshPlayer: '刷新播放器',
+        settings: '设置',
+        about: '关于',
+        viewOnGitHub: '在 GitHub 查看',
+        credits: '由 deosaju 创建',
+        playingFrom: playerName => `正在播放：${playerName}`,
+        unknownPlayer: '未知播放器',
+        unknownTrack: '未知歌曲',
+        unknownTrackTitle: '未知歌曲',
+        unknownArtist: '未知艺术家',
+        unknownAlbum: '未知专辑',
+    },
 };
 
 // Helper function to check if a bus name is a supported music player
 function isSupportedPlayer(busName) {
-    return busName === 'org.mpris.MediaPlayer2.spotify' ||
-        busName === 'org.mpris.MediaPlayer2.yesplaymusic';
+    return getPlayerConfig(busName) !== null;
 }
-
-// Player priority: lower number = higher priority
-const PLAYER_PRIORITY = {
-    'spotify': 0,
-    'yesplaymusic': 1,
-};
 
 // Extract short player name from bus name
 function getPlayerKey(busName) {
+    const config = getPlayerConfig(busName);
+    if (config) {
+        return config.key;
+    }
+
     const match = busName.match(/^org\.mpris\.MediaPlayer2\.(\w+)/);
     return match ? match[1] : null;
+}
+
+function getPlayerConfig(busName) {
+    for (const [key, config] of Object.entries(PLAYER_CONFIGS)) {
+        if (config.busName && busName === config.busName) {
+            return { key, ...config };
+        }
+
+        if (config.busNamePrefix && busName.startsWith(config.busNamePrefix)) {
+            if (!config.identity || getPlayerIdentity(busName) === config.identity) {
+                return { key, ...config };
+            }
+        }
+    }
+
+    return null;
+}
+
+function getPlayerIdentity(busName) {
+    try {
+        const proxy = Gio.DBusProxy.new_for_bus_sync(
+            Gio.BusType.SESSION,
+            Gio.DBusProxyFlags.NONE,
+            null,
+            busName,
+            MPRIS_PLAYER_PATH,
+            'org.freedesktop.DBus.Properties',
+            null
+        );
+
+        const reply = proxy.call_sync(
+            'Get',
+            new GLib.Variant('(ss)', ['org.mpris.MediaPlayer2', 'Identity']),
+            Gio.DBusCallFlags.NONE,
+            -1,
+            null
+        );
+
+        return reply.get_child_value(0).get_variant().unpack();
+    } catch (e) {
+        return null;
+    }
+}
+
+function getLanguage(settings) {
+    const language = settings.get_string('language');
+    return TRANSLATIONS[language] ? language : 'en';
+}
+
+function t(settings, key, ...args) {
+    const value = TRANSLATIONS[getLanguage(settings)][key] || TRANSLATIONS.en[key] || key;
+    return typeof value === 'function' ? value(...args) : value;
+}
+
+function getPlayerDisplayName(settings, playerKey) {
+    if (getLanguage(settings) === 'zh' && playerKey === 'lx-music-desktop') {
+        return '洛雪音乐';
+    }
+
+    return PLAYER_CONFIGS[playerKey]?.name || playerKey;
 }
 
 const MusicLyricsIndicator = GObject.registerClass(
@@ -86,6 +198,7 @@ const MusicLyricsIndicator = GObject.registerClass(
             this._proxy = null;
             this._propertiesChangedId = null;
             this._lyricsTimeoutId = null;
+            this._lxMusicApiTimeoutId = null;
             this._currentBusName = null;
             this._busWatchIds = null;
             this._isPlaying = false;
@@ -106,10 +219,23 @@ const MusicLyricsIndicator = GObject.registerClass(
                     this._applyFontSize();
                 })
             );
+            this._settingsSignalIds.push(
+                this._settings.connect('changed::player-priority-order', () => {
+                    this._findActivePlayer();
+                })
+            );
+            this._settingsSignalIds.push(
+                this._settings.connect('changed::language', () => {
+                    this._updateMenuLanguage();
+                    this._updatePlayerInfo();
+                    this._updatePlayerActionItems();
+                })
+            );
 
             // Start with music icon visible, label hidden
             this._showMusicIcon();
             this._buildMenu();
+            this._updatePlayerActionItems();
             this._setupDBusMonitoring();
         }
 
@@ -132,34 +258,43 @@ const MusicLyricsIndicator = GObject.registerClass(
 
         _buildMenu() {
             // Player info section
-            this._playerInfoItem = new PopupMenu.PopupMenuItem('No player connected', {
+            this._playerInfoItem = new PopupMenu.PopupMenuItem(t(this._settings, 'noPlayerConnected'), {
                 reactive: false
             });
             this._playerInfoItem.label.style = 'font-size: 0.85em; color: #888;';
             this.menu.addMenuItem(this._playerInfoItem);
 
-            // Track info section — clickable to open player
-            this._trackInfoItem = new PopupMenu.PopupMenuItem('Open Spotify', {
-                reactive: true
+            // Track info section
+            this._trackInfoItem = new PopupMenu.PopupMenuItem(t(this._settings, 'unknownTrack'), {
+                reactive: false
             });
-            this._trackInfoItem.connect('activate', () => {
-                this._openPlayer();
-            });
+            this._trackInfoItem.label.style = 'font-size: 0.9em;';
             this.menu.addMenuItem(this._trackInfoItem);
 
             this.menu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem());
 
+            this._playerActionItems = {};
+            for (const playerKey of PLAYER_ACTION_ORDER) {
+                const item = new PopupMenu.PopupMenuItem(getPlayerDisplayName(this._settings, playerKey));
+                item.connect('activate', () => {
+                    this._openPlayerByKey(playerKey);
+                });
+                this._playerActionItems[playerKey] = item;
+                this.menu.addMenuItem(item);
+            }
+
+            this.menu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem());
 
             // Refresh button
-            const refreshItem = new PopupMenu.PopupMenuItem('Refresh Player');
-            refreshItem.connect('activate', () => {
+            this._refreshItem = new PopupMenu.PopupMenuItem(t(this._settings, 'refreshPlayer'));
+            this._refreshItem.connect('activate', () => {
                 this._findActivePlayer();
             });
-            this.menu.addMenuItem(refreshItem);
+            this.menu.addMenuItem(this._refreshItem);
 
             // Settings button
-            const settingsItem = new PopupMenu.PopupMenuItem('Settings');
-            settingsItem.connect('activate', () => {
+            this._settingsItem = new PopupMenu.PopupMenuItem(t(this._settings, 'settings'));
+            this._settingsItem.connect('activate', () => {
                 try {
                     const proc = Gio.Subprocess.new(
                         ['gnome-extensions', 'prefs', 'spotify-lyrics@gnome-shell-extension'],
@@ -169,43 +304,58 @@ const MusicLyricsIndicator = GObject.registerClass(
                     logError(e, 'Failed to open extension settings');
                 }
             });
-            this.menu.addMenuItem(settingsItem);
+            this.menu.addMenuItem(this._settingsItem);
 
             this.menu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem());
 
             // Info submenu
-            this._infoSubmenu = new PopupMenu.PopupSubMenuMenuItem('About');
+            this._infoSubmenu = new PopupMenu.PopupSubMenuMenuItem(t(this._settings, 'about'));
 
             // GitHub link
-            const githubItem = new PopupMenu.PopupMenuItem('View on GitHub');
-            githubItem.connect('activate', () => {
+            this._githubItem = new PopupMenu.PopupMenuItem(t(this._settings, 'viewOnGitHub'));
+            this._githubItem.connect('activate', () => {
                 Gio.AppInfo.launch_default_for_uri(
                     'https://github.com/d3osaju/Spotline',
                     null
                 );
             });
-            this._infoSubmenu.menu.addMenuItem(githubItem);
+            this._infoSubmenu.menu.addMenuItem(this._githubItem);
 
             // Credits
-            const creditsItem = new PopupMenu.PopupMenuItem('Created by deosaju', {
+            this._creditsItem = new PopupMenu.PopupMenuItem(t(this._settings, 'credits'), {
                 reactive: false
             });
-            creditsItem.label.style = 'font-size: 0.9em; color: #888;';
-            this._infoSubmenu.menu.addMenuItem(creditsItem);
+            this._creditsItem.label.style = 'font-size: 0.9em; color: #888;';
+            this._infoSubmenu.menu.addMenuItem(this._creditsItem);
 
             this.menu.addMenuItem(this._infoSubmenu);
         }
 
-        _openPlayer() {
-            // Determine which desktop file to launch
-            let desktopId = 'spotify.desktop'; // default
-
-            if (this._currentBusName) {
-                const playerKey = getPlayerKey(this._currentBusName);
-                if (playerKey && PLAYER_LAUNCH_MAP[playerKey]) {
-                    desktopId = PLAYER_LAUNCH_MAP[playerKey];
-                }
+        _updateMenuLanguage() {
+            if (this._currentTrack) {
+                this._trackInfoItem.label.text = `${this._currentTrack.artist} - ${this._currentTrack.title}`;
+            } else if (this._trackInfoItem) {
+                this._trackInfoItem.label.text = t(this._settings, 'unknownTrack');
             }
+            if (this._refreshItem) {
+                this._refreshItem.label.text = t(this._settings, 'refreshPlayer');
+            }
+            if (this._settingsItem) {
+                this._settingsItem.label.text = t(this._settings, 'settings');
+            }
+            if (this._infoSubmenu) {
+                this._infoSubmenu.label.text = t(this._settings, 'about');
+            }
+            if (this._githubItem) {
+                this._githubItem.label.text = t(this._settings, 'viewOnGitHub');
+            }
+            if (this._creditsItem) {
+                this._creditsItem.label.text = t(this._settings, 'credits');
+            }
+        }
+
+        _openPlayerByKey(playerKey) {
+            const desktopId = PLAYER_LAUNCH_MAP[playerKey] || PLAYER_LAUNCH_MAP.spotify;
 
             // Use Shell.AppSystem to activate the app window (or launch if not running)
             try {
@@ -227,6 +377,140 @@ const MusicLyricsIndicator = GObject.registerClass(
                 }
             } catch (e) {
                 logError(e, `Failed to launch ${desktopId}`);
+            }
+        }
+
+        _updatePlayerActionItems() {
+            if (!this._playerActionItems) {
+                return;
+            }
+
+            const runningPlayerKeys = this._getRunningPlayerKeys();
+            for (const playerKey of PLAYER_ACTION_ORDER) {
+                const item = this._playerActionItems[playerKey];
+                if (!item) {
+                    continue;
+                }
+
+                const isRunning = runningPlayerKeys.has(playerKey);
+                item.label.text = getPlayerDisplayName(this._settings, playerKey);
+                item.label.style = isRunning ?
+                    'font-weight: 600;' :
+                    'color: #8a8a8a;';
+            }
+        }
+
+        _getRunningPlayerKeys() {
+            try {
+                const supportedPlayers = this._getSupportedPlayersFromNames(this._listDBusNamesSync());
+                return new Set(supportedPlayers.map(busName => getPlayerKey(busName)).filter(Boolean));
+            } catch (e) {
+                return new Set();
+            }
+        }
+
+        _getPlayerPriorityOrder() {
+            let configuredOrder = [];
+
+            try {
+                configuredOrder = this._settings.get_string('player-priority-order')
+                    .split(',')
+                    .map(key => key.trim())
+                    .filter(key => PLAYER_CONFIGS[key]);
+            } catch (e) {
+                configuredOrder = [];
+            }
+
+            const seen = new Set(configuredOrder);
+            for (const key of DEFAULT_PLAYER_PRIORITY_ORDER) {
+                if (!seen.has(key)) {
+                    configuredOrder.push(key);
+                    seen.add(key);
+                }
+            }
+
+            return configuredOrder;
+        }
+
+        _getPlayerPriorityIndex(busName) {
+            const playerKey = getPlayerKey(busName);
+            const order = this._getPlayerPriorityOrder();
+            const index = order.indexOf(playerKey);
+            return index === -1 ? 99 : index;
+        }
+
+        _sortPlayersByPriority(busNames) {
+            return busNames.sort((a, b) => {
+                const priorityDiff = this._getPlayerPriorityIndex(a) - this._getPlayerPriorityIndex(b);
+                if (priorityDiff !== 0) {
+                    return priorityDiff;
+                }
+
+                return a.localeCompare(b);
+            });
+        }
+
+        _listDBusNamesSync() {
+            const dbusProxy = Gio.DBusProxy.new_for_bus_sync(
+                Gio.BusType.SESSION,
+                Gio.DBusProxyFlags.NONE,
+                null,
+                'org.freedesktop.DBus',
+                '/org/freedesktop/DBus',
+                'org.freedesktop.DBus',
+                null
+            );
+
+            const reply = dbusProxy.call_sync(
+                'ListNames',
+                null,
+                Gio.DBusCallFlags.NONE,
+                -1,
+                null
+            );
+
+            return reply.get_child_value(0).deep_unpack();
+        }
+
+        _getSupportedPlayersFromNames(names) {
+            return this._sortPlayersByPriority(names.filter(n => isSupportedPlayer(n)));
+        }
+
+        _getPreferredPlayerBusName(supportedPlayers) {
+            const playingPlayers = supportedPlayers.filter(n => this._isPlayerPlaying(n));
+            if (playingPlayers.length > 0) {
+                return playingPlayers[0];
+            }
+
+            return supportedPlayers.length > 0 ? supportedPlayers[0] : null;
+        }
+
+        _isPlayerPlaying(busName) {
+            try {
+                const playerProxy = Gio.DBusProxy.new_for_bus_sync(
+                    Gio.BusType.SESSION,
+                    Gio.DBusProxyFlags.NONE,
+                    null,
+                    busName,
+                    MPRIS_PLAYER_PATH,
+                    MPRIS_PLAYER_INTERFACE,
+                    null
+                );
+
+                const playbackStatus = playerProxy.get_cached_property('PlaybackStatus');
+                return playbackStatus?.unpack() === 'Playing';
+            } catch (e) {
+                return false;
+            }
+        }
+
+        _getPreferredPlayerBusNameFromDBus() {
+            try {
+                const supportedPlayers = this._getSupportedPlayersFromNames(this._listDBusNamesSync());
+                return this._getPreferredPlayerBusName(supportedPlayers);
+            } catch (e) {
+                logError(e, 'Failed to find preferred player');
+                return null;
             }
         }
 
@@ -252,6 +536,42 @@ const MusicLyricsIndicator = GObject.registerClass(
                 () => this._onPlayerVanished()
             ));
 
+            // Electron/Chromium-based players like LX Music expose dynamic bus
+            // names, so listen for all MPRIS name changes and rescan.
+            this._nameOwnerChangedId = Gio.DBus.session.signal_subscribe(
+                'org.freedesktop.DBus',
+                'org.freedesktop.DBus',
+                'NameOwnerChanged',
+                '/org/freedesktop/DBus',
+                null,
+                Gio.DBusSignalFlags.NONE,
+                (connection, senderName, objectPath, interfaceName, signalName, parameters) => {
+                    const [name] = parameters.deep_unpack();
+                    if (name.startsWith('org.mpris.MediaPlayer2.')) {
+                        this._findActivePlayer();
+                    }
+                }
+            );
+
+            this._mprisPropertiesChangedId = Gio.DBus.session.signal_subscribe(
+                null,
+                'org.freedesktop.DBus.Properties',
+                'PropertiesChanged',
+                MPRIS_PLAYER_PATH,
+                MPRIS_PLAYER_INTERFACE,
+                Gio.DBusSignalFlags.NONE,
+                (connection, senderName, objectPath, interfaceName, signalName, parameters) => {
+                    const [changedInterface, changedProperties] = parameters.deep_unpack();
+                    if (changedInterface !== MPRIS_PLAYER_INTERFACE) {
+                        return;
+                    }
+
+                    if (changedProperties.PlaybackStatus || changedProperties.Metadata) {
+                        this._findActivePlayer();
+                    }
+                }
+            );
+
             this._findActivePlayer();
         }
 
@@ -263,6 +583,10 @@ const MusicLyricsIndicator = GObject.registerClass(
             if (this._lyricsTimeoutId) {
                 GLib.source_remove(this._lyricsTimeoutId);
                 this._lyricsTimeoutId = null;
+            }
+            if (this._lxMusicApiTimeoutId) {
+                GLib.source_remove(this._lxMusicApiTimeoutId);
+                this._lxMusicApiTimeoutId = null;
             }
             this._findActivePlayer();
         }
@@ -290,32 +614,8 @@ const MusicLyricsIndicator = GObject.registerClass(
                             const reply = proxy.call_finish(result);
                             const names = reply.get_child_value(0).deep_unpack();
 
-                            // Find supported players, sorted by priority (Spotify > YesPlayMusic > QQ Music)
-                            const supportedPlayers = names.filter(n => isSupportedPlayer(n));
-                            supportedPlayers.sort((a, b) => {
-                                const aKey = getPlayerKey(a);
-                                const bKey = getPlayerKey(b);
-                                const aPriority = PLAYER_PRIORITY[aKey] ?? 99;
-                                const bPriority = PLAYER_PRIORITY[bKey] ?? 99;
-                                return aPriority - bPriority;
-                            });
-
-                            // First try to find a playing player (Spotify prioritized)
-                            let foundPlayer = null;
-
-                            for (const name of supportedPlayers) {
-                                if (this._isPlayerPlaying(name)) {
-                                    foundPlayer = name;
-                                    break;
-                                }
-                            }
-
-                            // If no playing player, connect to any supported player (Spotify prioritized)
-                            if (!foundPlayer) {
-                                if (supportedPlayers.length > 0) {
-                                    foundPlayer = supportedPlayers[0];
-                                }
-                            }
+                            const supportedPlayers = this._getSupportedPlayersFromNames(names);
+                            const foundPlayer = this._getPreferredPlayerBusName(supportedPlayers);
 
                             if (foundPlayer) {
                                 this._tryConnectToPlayer(foundPlayer);
@@ -324,8 +624,9 @@ const MusicLyricsIndicator = GObject.registerClass(
                                 this._proxy = null;
                                 this._playerProxy = null;
                                 this._showMusicIcon();
-                                this._playerInfoItem.label.text = 'No player connected';
-                                this._trackInfoItem.label.text = 'Open Spotify';
+                                this._playerInfoItem.label.text = t(this._settings, 'noPlayerConnected');
+                                this._trackInfoItem.label.text = t(this._settings, 'unknownTrack');
+                                this._updatePlayerActionItems();
                             }
                         } catch (e) {
                             logError(e, 'Failed to list DBus names');
@@ -337,29 +638,6 @@ const MusicLyricsIndicator = GObject.registerClass(
                 logError(e, 'Failed to query DBus');
                 this._showMusicIcon();
             }
-        }
-
-        _isPlayerPlaying(busName) {
-            try {
-                const playerProxy = Gio.DBusProxy.new_for_bus_sync(
-                    Gio.BusType.SESSION,
-                    Gio.DBusProxyFlags.NONE,
-                    null,
-                    busName,
-                    MPRIS_PLAYER_PATH,
-                    MPRIS_PLAYER_INTERFACE,
-                    null
-                );
-
-                const playbackStatus = playerProxy.get_cached_property('PlaybackStatus');
-                if (playbackStatus) {
-                    const status = playbackStatus.unpack();
-                    return status === 'Playing';
-                }
-            } catch (e) {
-                // Ignore errors, player might not be available
-            }
-            return false;
         }
 
         _tryConnectToPlayer(busName) {
@@ -402,6 +680,7 @@ const MusicLyricsIndicator = GObject.registerClass(
 
                 this._updatePlayerInfo();
                 this._updateTrackInfo();
+                this._updatePlayerActionItems();
                 return true;
             } catch (e) {
                 return false;
@@ -410,22 +689,22 @@ const MusicLyricsIndicator = GObject.registerClass(
 
         _updatePlayerInfo() {
             if (!this._currentBusName) {
-                this._playerInfoItem.label.text = 'No player connected';
+                this._playerInfoItem.label.text = t(this._settings, 'noPlayerConnected');
                 return;
             }
 
-            let playerName = 'Unknown Player';
+            let playerName = getPlayerConfig(this._currentBusName)?.name || t(this._settings, 'unknownPlayer');
             let playerIcon = '♪';
 
             if (this._currentBusName.includes('spotify')) {
-                playerName = 'Spotify';
+                playerIcon = '🎵';
+            } else if (this._currentBusName.includes('chromium')) {
                 playerIcon = '🎵';
             } else if (this._currentBusName.includes('yesplaymusic')) {
-                playerName = 'YesPlayMusic';
                 playerIcon = '🎵';
             }
 
-            this._playerInfoItem.label.text = `${playerIcon} Playing from ${playerName}`;
+            this._playerInfoItem.label.text = `${playerIcon} ${t(this._settings, 'playingFrom', playerName)}`;
         }
 
         _onPropertiesChanged() {
@@ -441,7 +720,7 @@ const MusicLyricsIndicator = GObject.registerClass(
                 const metadata = this._playerProxy.get_cached_property('Metadata');
                 if (!metadata) {
                     this._showMusicIcon();
-                    this._trackInfoItem.label.text = 'Open Spotify';
+                    this._trackInfoItem.label.text = t(this._settings, 'unknownTrack');
                     return;
                 }
 
@@ -466,16 +745,16 @@ const MusicLyricsIndicator = GObject.registerClass(
                 // If both title and artist are missing, show icon
                 if (!title && !artist) {
                     this._showMusicIcon();
-                    this._trackInfoItem.label.text = 'Unknown track';
+                    this._trackInfoItem.label.text = t(this._settings, 'unknownTrack');
                     return;
                 }
 
                 // We have track info — show the label
                 this._showLabel();
 
-                const newTitle = title || 'Unknown Track';
-                const newArtist = artist || 'Unknown Artist';
-                const newAlbum = album || 'Unknown Album';
+                const newTitle = title || t(this._settings, 'unknownTrackTitle');
+                const newArtist = artist || t(this._settings, 'unknownArtist');
+                const newAlbum = album || t(this._settings, 'unknownAlbum');
 
                 // Check if the track actually changed
                 const trackChanged = !this._currentTrack ||
@@ -491,8 +770,8 @@ const MusicLyricsIndicator = GObject.registerClass(
                 // Update menu with track info
                 this._trackInfoItem.label.text = `${this._currentTrack.artist} - ${this._currentTrack.title}`;
 
-                // Only fetch lyrics if the track actually changed
-                if (trackChanged) {
+                // Fetch when the track changed, or retry if a previous fetch left us without lyrics.
+                if (trackChanged || !this._currentLyrics || this._currentLyrics.length === 0) {
                     this._fetchLyrics(this._currentTrack.title, this._currentTrack.artist);
                 }
             } catch (e) {
@@ -508,9 +787,14 @@ const MusicLyricsIndicator = GObject.registerClass(
                 GLib.source_remove(this._lyricsTimeoutId);
                 this._lyricsTimeoutId = null;
             }
+            if (this._lxMusicApiTimeoutId) {
+                GLib.source_remove(this._lxMusicApiTimeoutId);
+                this._lxMusicApiTimeoutId = null;
+            }
 
             const isSpotify = this._currentBusName && this._currentBusName.includes('spotify');
             const isYesPlayMusic = this._currentBusName && this._currentBusName.includes('yesplaymusic');
+            const isLXMusic = getPlayerKey(this._currentBusName || '') === 'lx-music-desktop';
             const clientId = this._settings.get_string('spotify-client-id');
             const clientSecret = this._settings.get_string('spotify-client-secret');
             const hasSpotifyCredentials = clientId && clientSecret;
@@ -523,7 +807,21 @@ const MusicLyricsIndicator = GObject.registerClass(
                 });
             };
 
-            if (isYesPlayMusic && this._neteaseTrackId) {
+            const fetchGenericLyrics = () => {
+                this._fetchLRCLIB(title, artist, (success) => {
+                    if (!success) {
+                        neteaseFallback(title, artist);
+                    }
+                });
+            };
+
+            if (isLXMusic) {
+                this._startLXMusicOpenApiDisplay(title, artist, (success) => {
+                    if (!success) {
+                        fetchGenericLyrics();
+                    }
+                });
+            } else if (isYesPlayMusic && this._neteaseTrackId) {
                 // YesPlayMusic: local API (with track ID) -> Netease search -> fallback
                 this._fetchYesPlayMusicLyrics(this._neteaseTrackId, (success) => {
                     if (!success) {
@@ -563,18 +861,83 @@ const MusicLyricsIndicator = GObject.registerClass(
                 });
             } else if (isSpotify) {
                 // Spotify without credentials: LRCLIB -> Netease -> fallback
-                this._fetchLRCLIB(title, artist, (success) => {
-                    if (!success) {
-                        neteaseFallback(title, artist);
-                    }
-                });
+                fetchGenericLyrics();
             } else {
                 // Others: LRCLIB -> Netease -> fallback
-                this._fetchLRCLIB(title, artist, (success) => {
-                    if (!success) {
-                        neteaseFallback(title, artist);
+                fetchGenericLyrics();
+            }
+        }
+
+        _startLXMusicOpenApiDisplay(title, artist, callback) {
+            this._fetchLXMusicOpenApiStatus((data) => {
+                if (!data || data.status !== 'playing' || !data.name) {
+                    callback(false);
+                    return;
+                }
+
+                const displayArtist = data.singer || artist;
+                const initialText = data.lyricLineText || `${displayArtist} - ${data.name}`;
+                this._currentLyrics = [{ time: 0, text: initialText }];
+                this._currentTrack = {
+                    title: data.name,
+                    artist: displayArtist,
+                    album: data.albumName || t(this._settings, 'unknownAlbum')
+                };
+                this._trackDurationSec = data.duration || this._trackDurationSec || 0;
+                this._trackInfoItem.label.text = `${displayArtist} - ${data.name}`;
+                this._updateLabelText(initialText);
+
+                this._lxMusicApiTimeoutId = GLib.timeout_add(GLib.PRIORITY_DEFAULT, 500, () => {
+                    this._fetchLXMusicOpenApiStatus((latestData) => {
+                        if (!latestData || latestData.status !== 'playing') {
+                            return;
+                        }
+
+                        if (latestData.name) {
+                            const latestArtist = latestData.singer || displayArtist;
+                            this._currentTrack = {
+                                title: latestData.name,
+                                artist: latestArtist,
+                                album: latestData.albumName || this._currentTrack?.album || t(this._settings, 'unknownAlbum')
+                            };
+                            this._trackDurationSec = latestData.duration || this._trackDurationSec || 0;
+                            this._trackInfoItem.label.text = `${latestArtist} - ${latestData.name}`;
+                        }
+
+                        if (latestData.lyricLineText) {
+                            this._updateLabelText(latestData.lyricLineText);
+                        }
+                    });
+
+                    return GLib.SOURCE_CONTINUE;
+                });
+
+                callback(true);
+            });
+        }
+
+        _fetchLXMusicOpenApiStatus(callback) {
+            try {
+                const proc = Gio.Subprocess.new(
+                    ['curl', '-sS', '--max-time', '2', LX_MUSIC_STATUS_URL],
+                    Gio.SubprocessFlags.STDOUT_PIPE | Gio.SubprocessFlags.STDERR_PIPE
+                );
+
+                proc.communicate_utf8_async(null, null, (proc, result) => {
+                    try {
+                        const [, stdout] = proc.communicate_utf8_finish(result);
+                        if (!stdout) {
+                            callback(null);
+                            return;
+                        }
+
+                        callback(JSON.parse(stdout));
+                    } catch (e) {
+                        callback(null);
                     }
                 });
+            } catch (e) {
+                callback(null);
             }
         }
 
@@ -1030,6 +1393,11 @@ const MusicLyricsIndicator = GObject.registerClass(
                 this._lyricsTimeoutId = null;
             }
 
+            if (this._lxMusicApiTimeoutId) {
+                GLib.source_remove(this._lxMusicApiTimeoutId);
+                this._lxMusicApiTimeoutId = null;
+            }
+
             if (this._propertiesChangedId && this._playerProxy) {
                 this._playerProxy.disconnect(this._propertiesChangedId);
                 this._propertiesChangedId = null;
@@ -1040,6 +1408,16 @@ const MusicLyricsIndicator = GObject.registerClass(
                     Gio.bus_unwatch_name(id);
                 }
                 this._busWatchIds = null;
+            }
+
+            if (this._nameOwnerChangedId) {
+                Gio.DBus.session.signal_unsubscribe(this._nameOwnerChangedId);
+                this._nameOwnerChangedId = null;
+            }
+
+            if (this._mprisPropertiesChangedId) {
+                Gio.DBus.session.signal_unsubscribe(this._mprisPropertiesChangedId);
+                this._mprisPropertiesChangedId = null;
             }
 
             this._proxy = null;
