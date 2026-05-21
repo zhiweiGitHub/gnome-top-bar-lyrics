@@ -324,7 +324,7 @@ const MusicLyricsIndicator = GObject.registerClass(
             this._githubItem = new PopupMenu.PopupMenuItem(t(this._settings, 'viewOnGitHub'));
             this._githubItem.connect('activate', () => {
                 Gio.AppInfo.launch_default_for_uri(
-                    'https://github.com/d3osaju/gnome-top-bar-lyrics',
+                    'https://github.com/zhiweiGitHub/gnome-top-bar-lyrics',
                     null
                 );
             });
