@@ -77,12 +77,12 @@ const TRANSLATIONS = {
     },
 };
 
-// Helper function to check if a bus name is a supported music player
+const _identityCache = new Map();
+
 function isSupportedPlayer(busName) {
     return getPlayerConfig(busName) !== null;
 }
 
-// Extract short player name from bus name
 function getPlayerKey(busName) {
     const config = getPlayerConfig(busName);
     if (config) {
@@ -100,13 +100,22 @@ function getPlayerConfig(busName) {
         }
 
         if (config.busNamePrefix && busName.startsWith(config.busNamePrefix)) {
-            if (!config.identity || getPlayerIdentity(busName) === config.identity) {
+            if (!config.identity || getCachedPlayerIdentity(busName) === config.identity) {
                 return { key, ...config };
             }
         }
     }
 
     return null;
+}
+
+function getCachedPlayerIdentity(busName) {
+    if (_identityCache.has(busName)) {
+        return _identityCache.get(busName);
+    }
+    const identity = getPlayerIdentity(busName);
+    _identityCache.set(busName, identity);
+    return identity;
 }
 
 function getPlayerIdentity(busName) {
@@ -200,6 +209,9 @@ const MusicLyricsIndicator = GObject.registerClass(
             this._currentBusName = null;
             this._busWatchIds = null;
             this._isPlaying = false;
+            this._dbusProxy = null;
+            this._findPlayerDebounceId = null;
+            this._lastKnownPlayers = new Set();
 
             // Apply initial font size
             this._applyFontSize();
@@ -382,27 +394,17 @@ const MusicLyricsIndicator = GObject.registerClass(
                 return;
             }
 
-            const runningPlayerKeys = this._getRunningPlayerKeys();
             for (const playerKey of PLAYER_ACTION_ORDER) {
                 const item = this._playerActionItems[playerKey];
                 if (!item) {
                     continue;
                 }
 
-                const isRunning = runningPlayerKeys.has(playerKey);
+                const isRunning = this._lastKnownPlayers.has(playerKey);
                 item.label.text = getPlayerDisplayName(this._settings, playerKey);
                 item.label.style = isRunning ?
                     'font-weight: 600;' :
                     'color: #8a8a8a;';
-            }
-        }
-
-        _getRunningPlayerKeys() {
-            try {
-                const supportedPlayers = this._getSupportedPlayersFromNames(this._listDBusNamesSync());
-                return new Set(supportedPlayers.map(busName => getPlayerKey(busName)).filter(Boolean));
-            } catch (e) {
-                return new Set();
             }
         }
 
@@ -447,26 +449,19 @@ const MusicLyricsIndicator = GObject.registerClass(
             });
         }
 
-        _listDBusNamesSync() {
-            const dbusProxy = Gio.DBusProxy.new_for_bus_sync(
-                Gio.BusType.SESSION,
-                Gio.DBusProxyFlags.NONE,
-                null,
-                'org.freedesktop.DBus',
-                '/org/freedesktop/DBus',
-                'org.freedesktop.DBus',
-                null
-            );
-
-            const reply = dbusProxy.call_sync(
-                'ListNames',
-                null,
-                Gio.DBusCallFlags.NONE,
-                -1,
-                null
-            );
-
-            return reply.get_child_value(0).deep_unpack();
+        _ensureDbusProxy() {
+            if (!this._dbusProxy) {
+                this._dbusProxy = Gio.DBusProxy.new_for_bus_sync(
+                    Gio.BusType.SESSION,
+                    Gio.DBusProxyFlags.DO_NOT_LOAD_PROPERTIES | Gio.DBusProxyFlags.DO_NOT_AUTO_START,
+                    null,
+                    'org.freedesktop.DBus',
+                    '/org/freedesktop/DBus',
+                    'org.freedesktop.DBus',
+                    null
+                );
+            }
+            return this._dbusProxy;
         }
 
         _getSupportedPlayersFromNames(names) {
@@ -474,35 +469,46 @@ const MusicLyricsIndicator = GObject.registerClass(
         }
 
         _getPreferredPlayerBusName(supportedPlayers) {
-            const playingPlayers = supportedPlayers.filter(n => this._isPlayerPlaying(n));
-            if (playingPlayers.length > 0) {
-                return playingPlayers[0];
+            if (supportedPlayers.length === 0) {
+                return null;
             }
 
-            return supportedPlayers.length > 0 ? supportedPlayers[0] : null;
-        }
-
-        _isPlayerPlaying(busName) {
-            try {
-                const playerProxy = Gio.DBusProxy.new_for_bus_sync(
-                    Gio.BusType.SESSION,
-                    Gio.DBusProxyFlags.NONE,
-                    null,
-                    busName,
-                    MPRIS_PLAYER_PATH,
-                    MPRIS_PLAYER_INTERFACE,
-                    null
-                );
-
-                const playbackStatus = playerProxy.get_cached_property('PlaybackStatus');
-                return playbackStatus?.unpack() === 'Playing';
-            } catch (e) {
-                return false;
+            // If we already have a connected player that's in the list, check if it's playing
+            if (this._currentBusName && this._playerProxy && supportedPlayers.includes(this._currentBusName)) {
+                const playbackStatus = this._playerProxy.get_cached_property('PlaybackStatus');
+                if (playbackStatus?.unpack() === 'Playing') {
+                    return this._currentBusName;
+                }
             }
+
+            // Check which players are playing using cached properties where possible
+            for (const busName of supportedPlayers) {
+                if (busName === this._currentBusName && this._playerProxy) {
+                    const status = this._playerProxy.get_cached_property('PlaybackStatus');
+                    if (status?.unpack() === 'Playing') return busName;
+                } else {
+                    try {
+                        const proxy = Gio.DBusProxy.new_for_bus_sync(
+                            Gio.BusType.SESSION,
+                            Gio.DBusProxyFlags.DO_NOT_AUTO_START,
+                            null,
+                            busName,
+                            MPRIS_PLAYER_PATH,
+                            MPRIS_PLAYER_INTERFACE,
+                            null
+                        );
+                        const status = proxy.get_cached_property('PlaybackStatus');
+                        if (status?.unpack() === 'Playing') return busName;
+                    } catch (e) {
+                        // skip
+                    }
+                }
+            }
+
+            return supportedPlayers[0];
         }
 
         _setupDBusMonitoring() {
-            // Watch for specific supported players appearing/disappearing on the bus
             this._busWatchIds = [];
 
             // Watch Spotify
@@ -523,8 +529,7 @@ const MusicLyricsIndicator = GObject.registerClass(
                 () => this._onPlayerVanished()
             ));
 
-            // Electron/Chromium-based players like LX Music expose dynamic bus
-            // names, so listen for all MPRIS name changes and rescan.
+            // Electron/Chromium-based players like LX Music expose dynamic bus names
             this._nameOwnerChangedId = Gio.DBus.session.signal_subscribe(
                 'org.freedesktop.DBus',
                 'org.freedesktop.DBus',
@@ -533,8 +538,11 @@ const MusicLyricsIndicator = GObject.registerClass(
                 null,
                 Gio.DBusSignalFlags.NONE,
                 (connection, senderName, objectPath, interfaceName, signalName, parameters) => {
-                    const [name] = parameters.deep_unpack();
+                    const [name, oldOwner, newOwner] = parameters.deep_unpack();
                     if (name.startsWith('org.mpris.MediaPlayer2.')) {
+                        if (!newOwner) {
+                            _identityCache.delete(name);
+                        }
                         this._findActivePlayer();
                     }
                 }
@@ -553,8 +561,14 @@ const MusicLyricsIndicator = GObject.registerClass(
                         return;
                     }
 
-                    if (changedProperties.PlaybackStatus || changedProperties.Metadata) {
+                    if (changedProperties.PlaybackStatus) {
+                        // PlaybackStatus changed — might need to switch active player
                         this._findActivePlayer();
+                    } else if (changedProperties.Metadata) {
+                        // Metadata only — just update track info on current player
+                        if (this._currentBusName && this._playerProxy) {
+                            this._updateTrackInfo();
+                        }
                     }
                 }
             );
@@ -563,7 +577,6 @@ const MusicLyricsIndicator = GObject.registerClass(
         }
 
         _onPlayerVanished() {
-            // A player disappeared, try to find another active one
             this._currentTrack = null;
             this._currentLyrics = null;
             this._currentLine = '';
@@ -579,16 +592,20 @@ const MusicLyricsIndicator = GObject.registerClass(
         }
 
         _findActivePlayer() {
+            // Debounce: collapse rapid calls into one
+            if (this._findPlayerDebounceId) {
+                GLib.source_remove(this._findPlayerDebounceId);
+            }
+            this._findPlayerDebounceId = GLib.timeout_add(GLib.PRIORITY_DEFAULT, 300, () => {
+                this._findPlayerDebounceId = null;
+                this._findActivePlayerNow();
+                return GLib.SOURCE_REMOVE;
+            });
+        }
+
+        _findActivePlayerNow() {
             try {
-                const dbusProxy = Gio.DBusProxy.new_for_bus_sync(
-                    Gio.BusType.SESSION,
-                    Gio.DBusProxyFlags.NONE,
-                    null,
-                    'org.freedesktop.DBus',
-                    '/org/freedesktop/DBus',
-                    'org.freedesktop.DBus',
-                    null
-                );
+                const dbusProxy = this._ensureDbusProxy();
 
                 dbusProxy.call(
                     'ListNames',
@@ -602,6 +619,10 @@ const MusicLyricsIndicator = GObject.registerClass(
                             const names = reply.get_child_value(0).deep_unpack();
 
                             const supportedPlayers = this._getSupportedPlayersFromNames(names);
+                            this._lastKnownPlayers = new Set(
+                                supportedPlayers.map(n => getPlayerKey(n)).filter(Boolean)
+                            );
+
                             const foundPlayer = this._getPreferredPlayerBusName(supportedPlayers);
 
                             if (foundPlayer) {
@@ -613,8 +634,8 @@ const MusicLyricsIndicator = GObject.registerClass(
                                 this._showMusicIcon();
                                 this._playerInfoItem.label.text = t(this._settings, 'noPlayerConnected');
                                 this._trackInfoItem.label.text = t(this._settings, 'unknownTrack');
-                                this._updatePlayerActionItems();
                             }
+                            this._updatePlayerActionItems();
                         } catch (e) {
                             logError(e, 'Failed to list DBus names');
                             this._showMusicIcon();
@@ -634,7 +655,6 @@ const MusicLyricsIndicator = GObject.registerClass(
             }
 
             try {
-                // Create proxy for properties interface
                 const proxy = Gio.DBusProxy.new_for_bus_sync(
                     Gio.BusType.SESSION,
                     Gio.DBusProxyFlags.NONE,
@@ -645,7 +665,6 @@ const MusicLyricsIndicator = GObject.registerClass(
                     null
                 );
 
-                // Create proxy for player interface to monitor changes
                 const playerProxy = Gio.DBusProxy.new_for_bus_sync(
                     Gio.BusType.SESSION,
                     Gio.DBusProxyFlags.NONE,
@@ -656,7 +675,6 @@ const MusicLyricsIndicator = GObject.registerClass(
                     null
                 );
 
-                // Disconnect previous player if any
                 if (this._propertiesChangedId && this._playerProxy) {
                     this._playerProxy.disconnect(this._propertiesChangedId);
                 }
@@ -672,7 +690,6 @@ const MusicLyricsIndicator = GObject.registerClass(
 
                 this._updatePlayerInfo();
                 this._updateTrackInfo();
-                this._updatePlayerActionItems();
                 return true;
             } catch (e) {
                 return false;
@@ -721,11 +738,9 @@ const MusicLyricsIndicator = GObject.registerClass(
                 const artist = metadataDict['xesam:artist']?.deep_unpack()[0] || null;
                 const album = metadataDict['xesam:album']?.unpack() || null;
                 const trackUrl = metadataDict['xesam:url']?.unpack() || null;
-                // mpris:length is in microseconds
                 const lengthUs = metadataDict['mpris:length']?.unpack() || 0;
                 this._trackDurationSec = lengthUs / 1000000;
 
-                // Extract Netease song ID from YesPlayMusic's xesam:url (e.g. "/trackid/1902252436")
                 this._neteaseTrackId = null;
                 if (trackUrl) {
                     const idMatch = trackUrl.match(/\/trackid\/(\d+)/);
@@ -734,22 +749,18 @@ const MusicLyricsIndicator = GObject.registerClass(
                     }
                 }
 
-                // If both title and artist are missing, show icon
                 if (!title && !artist) {
                     this._showMusicIcon();
                     this._trackInfoItem.label.text = t(this._settings, 'unknownTrack');
                     return;
                 }
 
-                // We have track info — show the label
                 this._showLabel();
 
                 const newTitle = title || t(this._settings, 'unknownTrackTitle');
                 const newArtist = artist || t(this._settings, 'unknownArtist');
                 const newAlbum = album || t(this._settings, 'unknownAlbum');
 
-                // When LX Music API polling is active, compare against the API's
-                // track name instead of _currentTrack (which MPRIS may report differently).
                 let trackChanged;
                 if (this._lxMusicApiTimeoutId && this._lxMusicTrackName) {
                     trackChanged = this._lxMusicTrackName !== newTitle;
@@ -765,10 +776,8 @@ const MusicLyricsIndicator = GObject.registerClass(
                     album: newAlbum
                 };
 
-                // Update menu with track info
                 this._trackInfoItem.label.text = `${this._currentTrack.artist} - ${this._currentTrack.title}`;
 
-                // Fetch when the track changed, or retry if a previous fetch left us without lyrics.
                 if (trackChanged || !this._currentLyrics || this._currentLyrics.length === 0) {
                     this._fetchLyrics(this._currentTrack.title, this._currentTrack.artist);
                 }
@@ -780,7 +789,6 @@ const MusicLyricsIndicator = GObject.registerClass(
         // --- Multi-source lyrics fetching with chain fallback ---
 
         _fetchLyrics(title, artist) {
-            // Clear any existing lyrics timeout
             if (this._lyricsTimeoutId) {
                 GLib.source_remove(this._lyricsTimeoutId);
                 this._lyricsTimeoutId = null;
@@ -820,14 +828,12 @@ const MusicLyricsIndicator = GObject.registerClass(
                     }
                 });
             } else if (isYesPlayMusic && this._neteaseTrackId) {
-                // YesPlayMusic: local API (with track ID) -> Netease search -> fallback
                 this._fetchYesPlayMusicLyrics(this._neteaseTrackId, (success) => {
                     if (!success) {
                         neteaseFallback(title, artist);
                     }
                 });
             } else if (isSpotify && hasSpotifyCredentials) {
-                // Spotify + credentials: auto-fetch token, then use Spotify API to refine track info
                 this._ensureSpotifyToken(clientId, clientSecret, (token) => {
                     if (token) {
                         this._fetchSpotifyTrackInfo(title, artist, token, (refinedTitle, refinedArtist) => {
@@ -835,7 +841,6 @@ const MusicLyricsIndicator = GObject.registerClass(
                             const a = refinedArtist || artist;
                             this._fetchLRCLIB(t, a, (success) => {
                                 if (!success) {
-                                    // If refined name failed, retry LRCLIB with original name
                                     if (refinedTitle && (refinedTitle !== title || refinedArtist !== artist)) {
                                         this._fetchLRCLIB(title, artist, (success2) => {
                                             if (!success2) {
@@ -849,7 +854,6 @@ const MusicLyricsIndicator = GObject.registerClass(
                             });
                         });
                     } else {
-                        // Token fetch failed, fall back to LRCLIB directly
                         this._fetchLRCLIB(title, artist, (success) => {
                             if (!success) {
                                 neteaseFallback(title, artist);
@@ -857,11 +861,7 @@ const MusicLyricsIndicator = GObject.registerClass(
                         });
                     }
                 });
-            } else if (isSpotify) {
-                // Spotify without credentials: LRCLIB -> Netease -> fallback
-                fetchGenericLyrics();
             } else {
-                // Others: LRCLIB -> Netease -> fallback
                 fetchGenericLyrics();
             }
         }
@@ -965,14 +965,12 @@ const MusicLyricsIndicator = GObject.registerClass(
         }
 
         _ensureSpotifyToken(clientId, clientSecret, callback) {
-            // Check if we have a valid cached token
             const now = Date.now();
             if (this._spotifyAccessToken && this._spotifyTokenExpiry > now) {
                 callback(this._spotifyAccessToken);
                 return;
             }
 
-            // Fetch a new token using Client Credentials flow
             const encoder = new TextEncoder();
             const credentials = GLib.base64_encode(encoder.encode(`${clientId}:${clientSecret}`));
 
@@ -993,7 +991,6 @@ const MusicLyricsIndicator = GObject.registerClass(
                             const data = JSON.parse(stdout);
                             if (data.access_token) {
                                 this._spotifyAccessToken = data.access_token;
-                                // Token expires_in is in seconds, subtract 60s as safety margin
                                 this._spotifyTokenExpiry = now + (data.expires_in - 60) * 1000;
                                 callback(this._spotifyAccessToken);
                                 return;
@@ -1056,7 +1053,6 @@ const MusicLyricsIndicator = GObject.registerClass(
                     const [success, contents] = source.load_contents_finish(result);
 
                     if (!success) {
-                        // Exact match failed, try search API
                         this._fetchLRCLIBSearch(title, artist, callback);
                         return;
                     }
@@ -1070,11 +1066,9 @@ const MusicLyricsIndicator = GObject.registerClass(
                         this._startLyricsDisplay();
                         callback(true);
                     } else {
-                        // No synced lyrics from exact match, try search API
                         this._fetchLRCLIBSearch(title, artist, callback);
                     }
                 } catch (e) {
-                    // Parse error or HTTP error, try search API as fallback
                     this._fetchLRCLIBSearch(title, artist, callback);
                 }
             });
@@ -1102,13 +1096,11 @@ const MusicLyricsIndicator = GObject.registerClass(
                         return;
                     }
 
-                    // Filter results with synced lyrics
                     const syncedResults = results.filter(r => r.syncedLyrics);
 
                     if (syncedResults.length > 0) {
                         let bestResult = syncedResults[0];
 
-                        // If we have track duration, prefer the result with closest duration
                         if (this._trackDurationSec > 0) {
                             bestResult = syncedResults.reduce((best, current) => {
                                 const bestDiff = Math.abs((best.duration || 0) - this._trackDurationSec);
@@ -1123,7 +1115,6 @@ const MusicLyricsIndicator = GObject.registerClass(
                         return;
                     }
 
-                    // No synced lyrics found — return false to allow fallback to other sources
                     callback(false);
                 } catch (e) {
                     logError(e, 'Failed to search lyrics from LRCLIB');
@@ -1210,7 +1201,6 @@ const MusicLyricsIndicator = GObject.registerClass(
         // --- End multi-source lyrics ---
 
         _parseLRC(lrcText) {
-            // Parse LRC format: [mm:ss.xx]lyrics or [mm:ss.xxx]lyrics
             const lines = [];
             const lrcLines = lrcText.split('\n');
 
@@ -1222,9 +1212,6 @@ const MusicLyricsIndicator = GObject.registerClass(
                     const fracStr = match[3];
                     const text = match[4].trim();
 
-                    // Handle variable-length fractional seconds:
-                    // 2 digits = centiseconds (e.g. .82 = 820ms)
-                    // 3 digits = milliseconds (e.g. .237 = 237ms)
                     let fracMs;
                     if (fracStr.length === 1) {
                         fracMs = parseInt(fracStr) * 100;
@@ -1250,25 +1237,19 @@ const MusicLyricsIndicator = GObject.registerClass(
                 return;
             }
 
-            // Clear any existing timeout before starting a new one
             if (this._lyricsTimeoutId) {
                 GLib.source_remove(this._lyricsTimeoutId);
                 this._lyricsTimeoutId = null;
             }
 
-            // Reset current line so the first update always triggers
             this._currentLine = '';
+            this._lyricsStartTime = GLib.get_monotonic_time() / 1000;
+            this._lyricsStartPosition = 0;
+            this._positionSupported = null;
+            this._positionZeroCount = 0;
 
-            // Record start time for fallback timing (when Position is not supported)
-            this._lyricsStartTime = GLib.get_monotonic_time() / 1000; // in ms
-            this._lyricsStartPosition = 0; // will be updated on first successful Position query
-            this._positionSupported = null; // unknown yet
-            this._positionZeroCount = 0; // track consecutive zero returns before deciding
-
-            // Get current playback position
             this._updateCurrentLyricLine();
 
-            // Update lyrics at 200ms interval for tighter sync
             this._lyricsTimeoutId = GLib.timeout_add(GLib.PRIORITY_DEFAULT, 200, () => {
                 this._updateCurrentLyricLine();
                 return GLib.SOURCE_CONTINUE;
@@ -1281,7 +1262,6 @@ const MusicLyricsIndicator = GObject.registerClass(
             }
 
             try {
-                // Query position via DBus
                 this._proxy.call(
                     'Get',
                     new GLib.Variant('(ss)', [MPRIS_PLAYER_INTERFACE, 'Position']),
@@ -1294,23 +1274,18 @@ const MusicLyricsIndicator = GObject.registerClass(
                             const positionUs = reply.get_child_value(0).get_variant().get_int64();
                             let positionMs = positionUs / 1000;
 
-                            // Check if Position is supported (non-zero or first time)
                             if (positionMs > 0) {
                                 this._positionSupported = true;
                                 this._positionZeroCount = 0;
-                                // Update fallback timer reference
                                 this._lyricsStartTime = GLib.get_monotonic_time() / 1000;
                                 this._lyricsStartPosition = positionMs;
                             } else if (this._positionSupported === null) {
-                                // Don't decide on first zero — could be start of song
                                 this._positionZeroCount = (this._positionZeroCount || 0) + 1;
                                 if (this._positionZeroCount >= 5) {
-                                    // 5 consecutive zeros (~1s), likely not supported
                                     this._positionSupported = false;
                                 }
                             }
 
-                            // If Position is not supported, use elapsed time
                             if (!this._positionSupported) {
                                 const elapsed = GLib.get_monotonic_time() / 1000 - this._lyricsStartTime;
                                 positionMs = this._lyricsStartPosition + elapsed;
@@ -1318,7 +1293,6 @@ const MusicLyricsIndicator = GObject.registerClass(
 
                             this._syncLyricLine(positionMs);
                         } catch (e) {
-                            // Position query failed, use fallback timing
                             const elapsed = GLib.get_monotonic_time() / 1000 - this._lyricsStartTime;
                             const positionMs = this._lyricsStartPosition + elapsed;
                             this._syncLyricLine(positionMs);
@@ -1333,8 +1307,6 @@ const MusicLyricsIndicator = GObject.registerClass(
         _syncLyricLine(positionMs) {
             if (!this._currentLyrics || this._currentLyrics.length === 0) return;
 
-            // Add advance offset to compensate for polling + D-Bus latency + Position update lag
-            // YesPlayMusic only updates Position once per second, so we need a larger offset
             const LYRICS_ADVANCE_MS = 500;
             const adjustedMs = positionMs + LYRICS_ADVANCE_MS;
 
@@ -1371,6 +1343,11 @@ const MusicLyricsIndicator = GObject.registerClass(
         }
 
         destroy() {
+            if (this._findPlayerDebounceId) {
+                GLib.source_remove(this._findPlayerDebounceId);
+                this._findPlayerDebounceId = null;
+            }
+
             if (this._settingsSignalIds) {
                 for (const id of this._settingsSignalIds) {
                     this._settings.disconnect(id);
@@ -1412,7 +1389,9 @@ const MusicLyricsIndicator = GObject.registerClass(
 
             this._proxy = null;
             this._playerProxy = null;
+            this._dbusProxy = null;
             this._lxMusicTrackName = null;
+            _identityCache.clear();
             super.destroy();
         }
     });
@@ -1428,7 +1407,6 @@ export default class MusicLyricsExtension extends Extension {
         this._settings = this.getSettings();
         this._indicator = new MusicLyricsIndicator(this._settings);
 
-        // Delay position update to ensure other extensions (like Vitals) are loaded first
         this._positionTimeoutId = GLib.timeout_add(GLib.PRIORITY_DEFAULT, 500, () => {
             this._updatePosition();
             this._positionTimeoutId = null;
@@ -1467,13 +1445,11 @@ export default class MusicLyricsExtension extends Extension {
     _updatePosition() {
         if (!this._indicator) return;
 
-        // Remove from menu manager first
         if (this._menuManagerAdded) {
             Main.panel.menuManager.removeMenu(this._indicator.menu);
             this._menuManagerAdded = false;
         }
 
-        // Remove from current parent if applied
         if (this._indicator.get_parent()) {
             this._indicator.get_parent().remove_child(this._indicator);
         }
@@ -1485,7 +1461,6 @@ export default class MusicLyricsExtension extends Extension {
             Main.panel.menuManager.addMenu(this._indicator.menu);
             this._menuManagerAdded = true;
         } else if (position === 'center') {
-            // Insert before the date/time clock
             const dateMenu = Main.panel.statusArea.dateMenu;
             if (dateMenu && dateMenu.get_parent() === Main.panel._centerBox) {
                 Main.panel._centerBox.insert_child_below(this._indicator, dateMenu);
@@ -1495,7 +1470,6 @@ export default class MusicLyricsExtension extends Extension {
             Main.panel.menuManager.addMenu(this._indicator.menu);
             this._menuManagerAdded = true;
         } else {
-            // addToStatusArea handles menuManager registration automatically
             Main.panel.addToStatusArea('gnome-top-bar-lyrics-indicator', this._indicator);
             this._menuManagerAdded = false;
         }
