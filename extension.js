@@ -49,7 +49,6 @@ const PLAYER_CONFIGS = {
 const TRANSLATIONS = {
     en: {
         noPlayerConnected: 'No player connected',
-        openPlayer: playerName => `Open ${playerName}`,
         refreshPlayer: 'Refresh Player',
         settings: 'Settings',
         about: 'About',
@@ -64,7 +63,6 @@ const TRANSLATIONS = {
     },
     zh: {
         noPlayerConnected: '未连接播放器',
-        openPlayer: playerName => `打开${playerName}`,
         refreshPlayer: '刷新播放器',
         settings: '设置',
         about: '关于',
@@ -202,7 +200,6 @@ const MusicLyricsIndicator = GObject.registerClass(
             this._currentBusName = null;
             this._busWatchIds = null;
             this._isPlaying = false;
-
 
             // Apply initial font size
             this._applyFontSize();
@@ -504,16 +501,6 @@ const MusicLyricsIndicator = GObject.registerClass(
             }
         }
 
-        _getPreferredPlayerBusNameFromDBus() {
-            try {
-                const supportedPlayers = this._getSupportedPlayersFromNames(this._listDBusNamesSync());
-                return this._getPreferredPlayerBusName(supportedPlayers);
-            } catch (e) {
-                logError(e, 'Failed to find preferred player');
-                return null;
-            }
-        }
-
         _setupDBusMonitoring() {
             // Watch for specific supported players appearing/disappearing on the bus
             this._busWatchIds = [];
@@ -641,6 +628,11 @@ const MusicLyricsIndicator = GObject.registerClass(
         }
 
         _tryConnectToPlayer(busName) {
+            if (this._currentBusName === busName && this._playerProxy) {
+                this._updateTrackInfo();
+                return true;
+            }
+
             try {
                 // Create proxy for properties interface
                 const proxy = Gio.DBusProxy.new_for_bus_sync(
@@ -756,10 +748,16 @@ const MusicLyricsIndicator = GObject.registerClass(
                 const newArtist = artist || t(this._settings, 'unknownArtist');
                 const newAlbum = album || t(this._settings, 'unknownAlbum');
 
-                // Check if the track actually changed
-                const trackChanged = !this._currentTrack ||
-                    this._currentTrack.title !== newTitle ||
-                    this._currentTrack.artist !== newArtist;
+                // When LX Music API polling is active, compare against the API's
+                // track name instead of _currentTrack (which MPRIS may report differently).
+                let trackChanged;
+                if (this._lxMusicApiTimeoutId && this._lxMusicTrackName) {
+                    trackChanged = this._lxMusicTrackName !== newTitle;
+                } else {
+                    trackChanged = !this._currentTrack ||
+                        this._currentTrack.title !== newTitle ||
+                        this._currentTrack.artist !== newArtist;
+                }
 
                 this._currentTrack = {
                     title: newTitle,
@@ -870,7 +868,7 @@ const MusicLyricsIndicator = GObject.registerClass(
 
         _startLXMusicOpenApiDisplay(title, artist, callback) {
             this._fetchLXMusicOpenApiStatus((data) => {
-                if (!data || data.status !== 'playing' || !data.name) {
+                if (!data || !data.name) {
                     callback(false);
                     return;
                 }
@@ -878,11 +876,7 @@ const MusicLyricsIndicator = GObject.registerClass(
                 const displayArtist = data.singer || artist;
                 const initialText = data.lyricLineText || `${displayArtist} - ${data.name}`;
                 this._currentLyrics = [{ time: 0, text: initialText }];
-                this._currentTrack = {
-                    title: data.name,
-                    artist: displayArtist,
-                    album: data.albumName || t(this._settings, 'unknownAlbum')
-                };
+                this._lxMusicTrackName = data.name;
                 this._trackDurationSec = data.duration || this._trackDurationSec || 0;
                 this._trackInfoItem.label.text = `${displayArtist} - ${data.name}`;
                 this._updateLabelText(initialText);
@@ -895,11 +889,7 @@ const MusicLyricsIndicator = GObject.registerClass(
 
                         if (latestData.name) {
                             const latestArtist = latestData.singer || displayArtist;
-                            this._currentTrack = {
-                                title: latestData.name,
-                                artist: latestArtist,
-                                album: latestData.albumName || this._currentTrack?.album || t(this._settings, 'unknownAlbum')
-                            };
+                            this._lxMusicTrackName = latestData.name;
                             this._trackDurationSec = latestData.duration || this._trackDurationSec || 0;
                             this._trackInfoItem.label.text = `${latestArtist} - ${latestData.name}`;
                         }
@@ -988,7 +978,7 @@ const MusicLyricsIndicator = GObject.registerClass(
 
             try {
                 const proc = Gio.Subprocess.new(
-                    ['curl', '-s', '-X', 'POST',
+                    ['curl', '-sS', '--max-time', '5', '-X', 'POST',
                      'https://accounts.spotify.com/api/token',
                      '-H', `Authorization: Basic ${credentials}`,
                      '-H', 'Content-Type: application/x-www-form-urlencoded',
@@ -1028,7 +1018,7 @@ const MusicLyricsIndicator = GObject.registerClass(
 
             try {
                 const proc = Gio.Subprocess.new(
-                    ['curl', '-s', '-H', `Authorization: Bearer ${token}`, url],
+                    ['curl', '-sS', '--max-time', '5', '-H', `Authorization: Bearer ${token}`, url],
                     Gio.SubprocessFlags.STDOUT_PIPE | Gio.SubprocessFlags.STDERR_PIPE
                 );
 
@@ -1148,7 +1138,7 @@ const MusicLyricsIndicator = GObject.registerClass(
 
             try {
                 const proc = Gio.Subprocess.new(
-                    ['curl', '-s', searchUrl],
+                    ['curl', '-sS', '--max-time', '5', searchUrl],
                     Gio.SubprocessFlags.STDOUT_PIPE | Gio.SubprocessFlags.STDERR_PIPE
                 );
 
@@ -1184,7 +1174,7 @@ const MusicLyricsIndicator = GObject.registerClass(
 
             try {
                 const proc = Gio.Subprocess.new(
-                    ['curl', '-s', url],
+                    ['curl', '-sS', '--max-time', '5', url],
                     Gio.SubprocessFlags.STDOUT_PIPE | Gio.SubprocessFlags.STDERR_PIPE
                 );
 
@@ -1422,6 +1412,7 @@ const MusicLyricsIndicator = GObject.registerClass(
 
             this._proxy = null;
             this._playerProxy = null;
+            this._lxMusicTrackName = null;
             super.destroy();
         }
     });

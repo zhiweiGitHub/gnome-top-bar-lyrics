@@ -107,7 +107,7 @@ export default class SpotLinePreferences extends ExtensionPreferences {
 
         const positionRow = new Adw.ComboRow();
         const positions = ['left', 'center', 'right'];
-        positionRow.selected = positions.indexOf(settings.get_string('position-in-panel'));
+        positionRow.selected = Math.max(0, positions.indexOf(settings.get_string('position-in-panel')));
 
         const widthRow = new Adw.SpinRow({
             adjustment: new Gtk.Adjustment({
