@@ -562,13 +562,7 @@ const MusicLyricsIndicator = GObject.registerClass(
                     }
 
                     if (changedProperties.PlaybackStatus) {
-                        // PlaybackStatus changed — might need to switch active player
                         this._findActivePlayer();
-                    } else if (changedProperties.Metadata) {
-                        // Metadata only — just update track info on current player
-                        if (this._currentBusName && this._playerProxy) {
-                            this._updateTrackInfo();
-                        }
                     }
                 }
             );
@@ -631,6 +625,17 @@ const MusicLyricsIndicator = GObject.registerClass(
                                 this._currentBusName = null;
                                 this._proxy = null;
                                 this._playerProxy = null;
+                                this._currentTrack = null;
+                                this._currentLyrics = null;
+                                this._currentLine = '';
+                                if (this._lyricsTimeoutId) {
+                                    GLib.source_remove(this._lyricsTimeoutId);
+                                    this._lyricsTimeoutId = null;
+                                }
+                                if (this._lxMusicApiTimeoutId) {
+                                    GLib.source_remove(this._lxMusicApiTimeoutId);
+                                    this._lxMusicApiTimeoutId = null;
+                                }
                                 this._showMusicIcon();
                                 this._playerInfoItem.label.text = t(this._settings, 'noPlayerConnected');
                                 this._trackInfoItem.label.text = t(this._settings, 'unknownTrack');
